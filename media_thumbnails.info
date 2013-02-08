@@ -1,0 +1,3 @@
+name = Media Thumbnails
+description  = Creates more descriptive thumbnails for files that are not images
+core = 7.x

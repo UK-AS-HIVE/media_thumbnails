@@ -1,0 +1,175 @@
+<?php
+
+/**
+ * @file
+ *   Install hooks form media derivatves API.
+ *
+ * @author Justin Hall <jnhall5@uky.edu>
+ */
+
+
+/**
+ * Implements hook_schema().
+ */
+function media_thumbnails_schema() {
+  $schema['media_thumbnails'] = array(
+   'description' => 'Table for media thumbnails.',
+    'fields' => array(
+      'mtid' => array(
+        'description' => 'Identifier for thumbnails.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'uid' => array(
+        'description' => 'Owner of this thumbnail.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'type' => array(
+        'description' => 'Thumbnail type: 0 - unmanaged file, 1 - managed file.',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'image_type' => array(
+        'description' => 'Image type: 0 - static image, 1 - animated image.',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'source_fid' => array(
+        'description' => 'Source file in file_managed table.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'context' => array(
+        'description' => 'Context variables.',
+        'type' => 'blob',
+        'size' => 'big',
+        'not null' => FALSE,
+        'serialize' => TRUE,
+      ),
+      'status' => array(
+        'description' => 'Status of this thumbnail: 0 - waiting, 1 - processing, 2 - finished, 3 - error.',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'created' => array(
+        'description' => 'The Unix timestamp when the media thumbnail was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'changed' => array(
+        'description' => 'The Unix timestamp when the media thumbnail was most recently saved.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'language' => array(
+        'description' => 'Language of thumbnail.',
+        'type' => 'varchar',
+        'length' => 12,
+        'not null' => TRUE,
+        'default' => LANGUAGE_NONE,
+      ),
+      'log' => array(
+        'description' => 'Log of events, if avaialble.',
+        'type' => 'text',
+        'size' => 'normal',
+        'not null' => FALSE,
+      ),
+      'uri' => array(
+        'description' => 'The URI to access the thumbnail file (either local or remote).',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'settings' => array(
+        'description' => 'Settings used to generate this thumbnail.',
+        'type' => 'text',
+        'serialize' => TRUE,
+        'not null' => FALSE,
+      ),
+    ),
+    'indexes' => array(
+      'thumbnail_changed' => array('changed'),
+      'thumbnail_created' => array('created'),
+    ),
+    'unique keys' => array(
+      'source_fid__image_type' => array('source_fid', 'image_type'),
+      'mtid' => array('mtid'),
+      'uri' => array('uri'),
+    ),
+
+    /*
+    'foreign keys' => array(
+      'file_original' => array(
+        'table' => 'file_managed',
+        'columns' => array('source_fid' => 'fid'),
+      ),
+      'file_thumbnails' => array(
+        'table' => 'file_managed',
+        'columns' => array('thumbnail_fid' => 'fid'),
+      ),
+    ),*/
+    'primary key' => array('mtid'),
+  );
+
+/*
+  // Storage for unmanaged files URIs.
+  $schema['media_thumbnails_unmanaged'] = array(
+   'description' => 'Table of unmanaged media thumbnail files URIs.',
+    'fields' => array(
+      'mtid' => array(
+        'description' => 'Thumbnail this URI belongs to.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'uri' => array(
+        'description' => 'The URI to access the thumbnail file (either local or remote).',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+    ),
+    'unique keys' => array(
+      'mtid' => array('mtid'),
+      'uri' => array('uri'),
+    ),
+    'foreign keys' => array(
+      'mtid' => array(
+        'table' => 'media_thumbnails',
+        'columns' => array('mtid' => 'mtid'),
+      ),
+    ),
+    'primary key' => array('mtid'),
+  );*/
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function media_thumbnails_uninstall() {
+  //variable_del('media_thumbnails_background_process');
+  $thumbnails_path = 'public://media_thumbnails';
+  $thumbnails_path = drupal_realpath($thumbnails_path);
+  if(file_prepare_directory($thumbnails_path))
+    file_unmanaged_delete_recursive($thumbnails_path);
+}
+
+function media_thumbnails_install() {
+
+}

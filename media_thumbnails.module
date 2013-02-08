@@ -1,0 +1,425 @@
+<?php
+
+/**
+ * thumbnail status codes. This status codes define thumbnail state.
+ */
+define('MEDIA_THUMBNAIL_TYPE_WAITING', 0);
+define('MEDIA_THUMBNAIL_TYPE_PROCESSING', 1);
+define('MEDIA_THUMBNAIL_TYPE_FINISHED', 2);
+define('MEDIA_THUMBNAIL_TYPE_ERROR', 3);
+
+/**
+ * thumbnail owner configuration codes.
+ */
+define('MEDIA_THUMBNAIL_OWNER_FILE', 0);
+define('MEDIA_THUMBNAIL_OWNER_THUMBNAIL', 1);
+define('MEDIA_THUMBNAIL_OWNER_STATIC', 2);
+
+/**
+ * Define thumbnail type codes.
+ */
+define('MEDIA_THUMBNAIL_FILE_TYPE_UNMANAGED', 0);
+define('MEDIA_THUMBNAIL_FILE_TYPE_MANAGED', 1);
+
+/**
+ * Define thumbnail image type codes.
+ */
+define('MEDIA_THUMBNAIL_IMAGE_STATIC', 0);
+define('MEDIA_THUMBNAIL_IMAGE_ANIMATED', 1);
+
+function media_thumbnails_help($path, $arg){
+	switch($path){
+		case "admin/help#testeroni":
+			return '<p>' . t("Yumm, testeroni!") . '</p>';
+			break;
+	}
+}
+
+function media_thumbnails_enable() {
+  //Check if table exists, if not install the schema.
+  if(!db_table_exists('media_thumbnails')) {
+    drupal_install_schema('media_thumbnails');
+  }
+}
+
+function media_thumbnails_file_formatter_info() {
+  $formatters = array();
+
+  $formatters['video_thumbnail'] = array(
+    'label' => t('Video thumbnail'),
+    'default settings' => array(
+      'width' => 180,
+      'height' => 180,
+      'framecount' => 15,
+      'still_factor' => 0.1,
+      'playback' => 5,
+    ),
+    'view callback' => 'media_thumbnails_modified_file_formatter_thumbnail_view',
+    'settings callback' => 'media_thumbnails_modified_file_formatter_thumbnail_settings',
+  );
+
+  return $formatters;
+}
+
+function media_thumbnails_delete_thumbnails($file) {
+  foreach($file->media_thumbnails['thumbnails_list'] as $thumbnail) {
+    dpm($thumbnail);
+    dpm('gittin delete');
+    db_delete('media_thumbnails')
+      ->condition('mtid', $thumbnail->mtid)
+      ->execute();
+    file_unmanaged_delete($thumbnail->uri);
+    $file->media_thumbnails['has_thumbnails'] = FALSE;
+    unset($file->media_thumbnails['thumbnails_settings']);
+    unset($file->media_thumbnails['thumbnails_list']);
+    dpm($file);
+    dpm('after');
+  }
+}
+
+function media_thumbnails_modified_file_formatter_thumbnail_view($file, $display, $langcode) {
+  $input_types = media_thumbnails_input_types();
+  //dpm('view');
+  if (in_array($file->type, $input_types)) {
+    if ( !$file->media_thumbnails['has_thumbnails'] || $file->media_thumbnails['thumbnails_settings'] != $display['settings'] ) {
+      if( $file->media_thumbnails['has_thumbnails'] )
+        media_thumbnails_delete_thumbnails($file);
+      media_thumbnail_create_thumbnail($file, $display);
+      dpm('Creating new thumbnails');
+      //dpm($file);
+    }
+    $static_url = file_create_url($file->media_thumbnails['thumbnails_list'][MEDIA_THUMBNAIL_IMAGE_STATIC]->uri);
+	  $anim_url = file_create_url($file->media_thumbnails['thumbnails_list'][MEDIA_THUMBNAIL_IMAGE_ANIMATED]->uri);
+	  //dpm($url);
+	  //$markup = '<img src="' . $url . ' width="' . $display['settings']['width'] . '" height="' . $display['settings']['height'] . '" alt>';
+    $name = substr($file->filename, 0, strrpos($file->filename, '.'));
+	  $markup = '<div id="media-thumbnail-wrap-' . $name . '" class="media-thumbnail-static">'
+  		. '	<img id="media-thumbnail-animated" src="' . $anim_url . '" alt="">'
+  		. '	<img id="media-thumbnail-static" src="' . $static_url . '" alt="">'
+		. '</div>';
+
+  //$module_path = drupal_get_path('module', 'media_thumbnails');
+    drupal_add_js(drupal_get_path('module', 'media_thumbnails') . '/scripts/media_thumbnails.js');
+    drupal_add_css(drupal_get_path('module', 'media_thumbnails') . '/styles/media_thumbnails.css');
+    //dpm($file);
+	  return array(
+     '#markup' => $markup,
+    );
+  }
+}
+
+function media_thumbnails_modified_file_formatter_thumbnail_settings($form, &$form_state, $settings) {
+  $elements = array();
+
+  $elements['width'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Width'),
+    '#default_value' => $settings['width'],
+  );
+  $elements['height'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Height'),
+    '#default_value' => $settings['height'],
+  );
+  $elements['framecount'] = array(
+    '#description' => t('Number of frames in animated gif.'),
+    '#type' => 'textfield',
+    '#title' => t('Frame count'),
+    '#default_value' => $settings['framecount'],
+  );
+  $elements['playback'] = array(
+    '#description' => t('Playback length for animated gif'),
+    '#type' => 'textfield',
+    '#title' => t('Playback length'),
+    '#default_value' => $settings['playback'],
+  );
+  $elements['still_factor'] = array(
+    '#description' => t('Position in video of still image. From 0 (start) to 1 (end).'),
+    '#type' => 'textfield',
+    '#title' => t('Still image factor'),
+    '#default_value' => $settings['still_factor'],
+  );
+  return $elements;
+}
+
+function media_thumbnail_create_thumbnail($file, $display) {
+	$ffmpeg_path = variable_get('ffmpeg_path', '/usr/local/bin/ffmpeg');
+	$ffprobe_path = variable_get('ffprobe_path', '/usr/local/bin/ffprobe');
+
+  /*
+  if (!file_exists($ffmpeg_path)) {
+    $ex = new MediaThumbnailsException($thumbnail->mdid, t('Unable to find ffmpeg executable. You have <a href="@url">to configure it</a> before using Media Thumbnails.', array('@url' => 'admin/config/media/ffmpeg_simple')));
+    throw $ex;
+  }
+  */
+  //dpm(media_thumbnail_file_load($file));
+  // Get real path of source file.
+  $path = drupal_realpath($file->uri);
+  $pos = strrpos($file->filename, '.');
+  $name = substr($file->filename, 0, $pos);
+  //dpm('name');
+  //dpm($name);
+  $anim_file = 'public://media_thumbnails/' . $name;
+  $anim_file .= '-anim-thumb.gif';
+  $anim_file = file_destination($anim_file, FILE_EXISTS_RENAME);
+
+  $static_file = 'public://media_thumbnails/' . $name;
+  $static_file .= '-static-thumb.png';
+  $static_file = file_destination($static_file, FILE_EXISTS_RENAME);
+
+
+  $thumbnails_path = 'public://media_thumbnails/';
+  $temp_path = $thumbnails_path . 'tmp/';
+  $thumbnails_path = drupal_realpath($thumbnails_path);
+  $temp_path = drupal_realpath($temp_path);
+  /*$temp_path .= 'temp_' . substr($file->filename, 0, $pos);
+  $temp_path = '"' . $temp_path . '"';*/
+  if(!file_prepare_directory($temp_path))
+    if(!file_prepare_directory($thumbnails_path)) {
+      drupal_mkdir($thumbnails_path);
+      drupal_mkdir($temp_path);
+    }
+    else
+      drupal_mkdir($temp_path);
+  $ret_val = $output = '';
+  exec(
+  	$ffprobe_path . ' "' . $path . '" 2>&1',
+  	$output,
+  	$ret_val
+  	);
+  //dpm($ffprobe_path . ' ' . $path . ' 2>&1');
+  //dpm($output);
+
+  $duration = $fps = $resolution = NULL;
+  //$duration_key = $fps_key = FALSE;
+  foreach($output as $key => $value){
+    //dpm($value);
+    if(!$duration && preg_match('/Duration:/', $value))
+      preg_match("/(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+).(?P<seconds_decimal>\d+)/", $value, $duration);
+    if(!$fps)
+      preg_match("/, (?P<frames>\d+).(?P<frames_decimal>\d+) fps/", $value, $fps);
+    if(!$resolution)
+      preg_match("/((?!0x)(?P<width>\d+)x)(?P<height>\d+)/", $value, $resolution);
+  }
+
+  $seconds = $duration['hours']*60*60+$duration['minutes']*60+$duration['seconds']+$duration['seconds_decimal']/100;
+  $timestep = $seconds/$display['settings']['framecount'];
+
+  $min = min($resolution['height'], $resolution['width']);
+
+
+  $ret_val = array();
+  $output = '';
+  /*
+    // convert video to short (temporary) avi
+  $new_fps = $display['settings']['framecount']/$display['settings']['playback'];
+  $pts_factor = $display['settings']['playback']/$seconds;$to_shortened = $ffmpeg_path . ' ' .
+    ' -i "' . $path . '" ' .
+    '-an -r ' . $new_fps . ' -vf "crop=' . $min . ':' . $min . ', setpts=' . $pts_factor . '*PTS" -y "' . $temp_path . '/' . $name . '_shortened.avi"';
+  exec($to_shortened,	$output, $ret_val['to_avi']);*/
+  $stills_paths = array();
+  $ret_val['to_stills'] = array();
+  for($i=0;$i<$display['settings']['framecount'];$i++){
+    $stills_paths[$i] = $temp_path . '/' . $name . '_tmp_' . $i . '.png';
+    $to_still = $ffmpeg_path . ' -ss ' . ($i * $timestep + $seconds / 100) . ' -i "' . $path . '" ' .
+      '-f image2 -an -vf "crop=' . $min . ':' . $min . ':' . ($resolution['width'] - $min)/2 . ':' . ($resolution['height'] - $min)/2 . '" -vframes 1 -y "' . $stills_paths[$i] . '"';
+    exec($to_still, $output, $ret_val['to_stills'][$i]);
+  }
+  //dpm('first');
+  //dpm($to_still);
+
+  $temp_movie_path = $temp_path . '/' . $name . '_tmp.avi';
+  $to_temp_movie = $ffmpeg_path . ' ' .
+    ' -r ' . $display['settings']['framecount']/$display['settings']['playback'] . ' -f image2 -pattern_type glob -i "' . $temp_path . '/' . $name . '_tmp_*.png" ' .
+    ' -s ' . $display['settings']['height'] . 'x' . $display['settings']['width'] . ' -y "' . $temp_movie_path . '"';
+  exec($to_temp_movie, $output, $ret_val['to_temp_movie']);
+  //dpm($to_temp_movie);
+
+  // take one single snapshot for static image
+  $ret_val = $output = '';
+  $static_path = drupal_realpath($static_file);
+  $to_static = $ffmpeg_path . ' ' .
+    '-ss ' . $seconds * $display['settings']['still_factor'] . ' -i "' . $path . '" ' .
+    '-f image2 -an  -s ' . $display['settings']['height'] . 'x' . $display['settings']['width'] . ' -vf "crop=' . $min . ':' . $min . ':' . ($resolution['width'] - $min)/2 . ':' . ($resolution['height'] - $min)/2 . '" -y "' . $static_path . '"';
+  /*
+  $to_static = $ffmpeg_path . ' ' .
+    ' -i "' . $temp_path . '/' . $name . '_shortened.avi" ' .
+    '-f image2 -an -s ' . $display['settings']['height'] . 'x' . $display['settings']['width'] . ' -ss ' . $seconds/2 . ' -y "' . $static_path . '"';
+  */
+  exec($to_static,	$output, $ret_val['to_static']);
+  //dpm('then');
+  //dpm($to_static);
+  //dpm($output);
+
+  // then convert avi to gif
+  $anim_path = drupal_realpath($anim_file);
+  // not sure about changing back the fps rate right here...
+  $to_animated = $ffmpeg_path . ' ' .
+    ' -i "' . $temp_movie_path . '"' . 
+    ' -f gif -pix_fmt rgb24 -y "' . $anim_path . '"';
+  exec($to_animated, $output, $ret_val['to_animated']);
+  //dpm('then');
+  //dpm($to_animated);
+  //dpm($output);
+  if ( file_exists($static_file) && file_exists($anim_file) ) {
+    $static = media_thumbnails_create_thumbnail_object($file, MEDIA_THUMBNAIL_IMAGE_STATIC, $static_file, $display['settings']);
+    $animated = media_thumbnails_create_thumbnail_object($file, MEDIA_THUMBNAIL_IMAGE_ANIMATED, $anim_file, $display['settings']);
+  }
+  else {
+    //dpm('Error(s) resulted with the following codes:');
+    //dpm($ret_val);
+  }
+
+  if(file_prepare_directory($temp_path))
+    file_unmanaged_delete_recursive($temp_path);
+  //dpm($ret_val);
+  media_thumbnails_inform_file_object($file);
+  /*
+  for($i=0;$i<$display['settings']['framecount'];$i++){
+    file_unmanaged_delete($stills_paths[$i]);
+  }*/
+
+  return array(
+  	'animated' => $anim_file,
+  	'static' => $static_file,
+  	);
+}
+
+function media_thumbnails_create_thumbnail_object($file, $image_type, $uri, $settings, $context = array()) {
+  global $user;
+
+  // Create thumbnail object.
+  $thumbnail = new stdClass;
+  $thumbnail->type = MEDIA_THUMBNAIL_FILE_TYPE_UNMANAGED;
+  $thumbnail->image_type = $image_type;
+  $thumbnail->uri = $uri;
+  $thumbnail->status = MEDIA_THUMBNAIL_TYPE_WAITING;
+  $thumbnail->source_fid = $file->fid;
+  $thumbnail->root_source_fid = $file->media_thumbnails['is_thumbnail'] ? $file->media_thumbnails['thumbnail_object']->root_source_fid : $file->fid;
+  $thumbnail->uid = $user->uid;
+  $thumbnail->settings = $settings;
+  $thumbnail->context = $context;
+
+  return media_thumbnails_save($thumbnail);
+}
+
+function media_thumbnails_associated_types() {
+  return array_merge(
+  	media_thumbnails_input_types(),
+    media_thumbnails_output_types()
+  );
+}
+
+function media_thumbnails_input_types() {
+  return array(
+    'video',
+  );
+}
+
+function media_thumbnails_output_types() {
+  return array(
+    'image',
+  );
+}
+
+function media_thumbnails_thumbnail_types() {
+  return array(
+    'MEDIA_THUMBNAIL_IMAGE_STATIC' => MEDIA_THUMBNAIL_IMAGE_STATIC,
+    'MEDIA_THUMBNAIL_IMAGE_ANIMATED' => MEDIA_THUMBNAIL_IMAGE_ANIMATED,
+  );
+}
+
+
+function media_thumbnails_file_load($files) {
+  $associated_types = media_thumbnails_associated_types();
+
+  foreach ($files as $key => $file) {
+      if( in_array($file->type, $associated_types) ) {
+        media_thumbnails_inform_file_object($files[$key]);
+      }
+  }
+}
+
+
+function media_thumbnails_inform_file_object($file) {
+  $q = 'SELECT mtid FROM {media_thumbnails} WHERE uri = :uri';
+  $is_thumbnail = db_query($q, array(':uri' => $file->uri))->fetchObject();
+  if ($is_thumbnail) {
+    $file->media_thumbnails['is_thumbnail'] = TRUE;
+  }
+  else {
+    $file->media_thumbnails['is_thumbnail'] = FALSE;
+  }
+
+  // Check if has thumbnails.
+  if (isset($file->fid) && !$file->media_thumbnails['is_thumbnail']) {
+    $file->media_thumbnails['has_thumbnails'] = FALSE;
+    //$q = 'SELECT mtid FROM {media_thumbnails} WHERE uri = :uri';
+    $thumbnails = media_thumbnails_load($file->fid);
+    if($thumbnails) {
+      foreach($thumbnails as $thumbnail) {
+        $settings = unserialize($thumbnail->settings);
+        $file->media_thumbnails['thumbnails_list'][$thumbnail->image_type] = $thumbnail;
+        $file->media_thumbnails['thumbnails_settings'] = $settings;
+        $file->media_thumbnails['has_thumbnails'] = TRUE;
+      }
+    }
+  }
+}
+
+function media_thumbnails_load($source_fid) {
+  $image_types = media_thumbnails_thumbnail_types();
+  $thumbnails = array();
+
+  foreach($image_types as $key => $image_type) {
+    $q = 'SELECT * FROM {media_thumbnails} WHERE source_fid = :source_fid AND image_type = :image_type';
+    $thumbnail = db_query($q, array(':source_fid' => $source_fid, ':image_type' => $image_type))
+      ->fetchObject();
+
+    if($thumbnail)
+      $thumbnails[$image_type] = $thumbnail;
+  }
+
+  return $thumbnails;
+}
+
+
+/**
+ * Saves media thumbnail to DB.
+ *
+ * @param $thumbnail thumbnail object ($thumbnail->mtid must be defined if updating an exsisting item)
+ *
+ * @return Populated thumbnail object.
+ */
+function media_thumbnails_save($thumbnail) {
+  $transaction = db_transaction();
+
+  try {
+    // Check if this is new.
+    $new = !isset($thumbnail->mtid);
+
+    // Set created time if new.
+    if ($new) {
+      $thumbnail->created = REQUEST_TIME;
+    }
+
+    // Always update changed time.
+    $thumbnail->changed = REQUEST_TIME;
+
+    // Write to DB.
+    if ($new) {
+      drupal_write_record('media_thumbnails', $thumbnail);
+    }
+    else {
+      drupal_write_record('media_thumbnails', $thumbnail, 'mtid');
+    }
+
+    // Return media thumbnail object for saved item.
+    return media_thumbnails_load($thumbnail->mtid);
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    watchdog_exception('media_thumbnails', $e);
+    throw $e;
+  }
+}

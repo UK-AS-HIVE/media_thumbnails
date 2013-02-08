@@ -1,0 +1,6 @@
+.media-thumbnail-animated #media-thumbnail-static, .media-thumbnail-static #media-thumbnail-animated {
+	display: none;
+}
+.media-thumbnail-animated #media-thumbnail-animated, .media-thumbnail-static #media-thumbnail-static {
+	display: inline;
+}
